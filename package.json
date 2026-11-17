@@ -1,22 +1,25 @@
 {
   "name": "erp-rebuild-task-tracker",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "Internal task tracker for the ERP rebuild team (Node.js, Express, SQLite)",
+  "description": "Internal task tracker for the ERP rebuild team (Node.js, Express, MySQL)",
   "main": "server.js",
   "scripts": {
-    "start": "node --env-file-if-exists=.env server.js",
-    "dev": "node --env-file-if-exists=.env --watch server.js",
-    "test": "node --test tests/",
-    "seed": "node --env-file-if-exists=.env scripts/seed.js",
-    "backup": "node --env-file-if-exists=.env scripts/backup.js",
-    "import-legacy": "node --env-file-if-exists=.env scripts/import-legacy.js",
-    "map-module": "node --env-file-if-exists=.env scripts/map-module.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test tests/*.test.js",
+    "db:check": "node scripts/db-check.js",
+    "seed": "node scripts/seed.js",
+    "backup": "node scripts/backup.js",
+    "import-legacy": "node scripts/import-legacy.js",
+    "import-sqlite": "node scripts/import-sqlite.js",
+    "map-module": "node scripts/map-module.js"
   },
   "engines": {
     "node": ">=22.13.0"
   },
   "dependencies": {
-    "express": "^5.3.0"
+    "express": "^5.3.0",
+    "mysql2": "^3.24.6"
   }
 }

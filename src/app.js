@@ -5,9 +5,11 @@ const path = require('node:path');
 const express = require('express');
 const { createRoutes } = require('./routes');
 const { HttpError } = require('./validation');
+const { isDatabaseUnavailable, unavailableMessage, summarizeError } = require('./database');
 
 const publicDir = path.resolve(__dirname, '..', 'public');
 
+// db is the MySQL connection pool (see src/database.js).
 function createApp(db, { logRequests = false, allowedOrigins = [] } = {}) {
   const app = express();
   app.disable('x-powered-by');
@@ -63,7 +65,13 @@ function createApp(db, { logRequests = false, allowedOrigins = [] } = {}) {
     if (error.type === 'entity.parse.failed') return res.status(400).json({ error: 'The request body is not valid JSON.' });
     if (error.type === 'entity.too.large') return res.status(413).json({ error: 'The request is too large.' });
     if (error.status >= 400 && error.status < 500) return res.status(error.status).json({ error: 'The request could not be processed.' });
-    // Unexpected problems (including database errors): log the detail, show a safe message.
+    // The database is down, unreachable or busy: say so plainly (503), and log only the
+    // error code and message, never connection settings.
+    if (isDatabaseUnavailable(error)) {
+      console.error(`${req.method} ${req.originalUrl} - database problem: ${summarizeError(error)}`);
+      return res.status(503).json({ error: unavailableMessage(error), code: 'DATABASE_UNAVAILABLE' });
+    }
+    // Unexpected problems: log the detail, show a safe message.
     console.error(`${req.method} ${req.originalUrl} failed:`, error);
     res.status(500).json({ error: 'Something went wrong on the server. Please try again; if it continues, check the server log.' });
   });

@@ -4,16 +4,22 @@ A short script for showing the ERP Rebuild Task Tracker to your team lead.
 
 ## Before the demo
 
-1. Make sure nothing else is using port 3000 (stop the old Task Tracker with Ctrl+C).
+1. Make sure the MySQL service is running, and that nothing else is using port 3000 (stop any
+   older copy of the Task Tracker with Ctrl+C). `npm run db:check` confirms the database
+   settings in `.env` work.
 2. Decide which data to show:
    - **Your real tasks:** `npm start`
-   - **A separate demo database with examples** (recommended, keeps real data clean):
+   - **A separate demo database with examples** (recommended, keeps real data clean). Ask the MySQL
+     administrator for an empty second database (README, section 8, "Sample tasks"), then, in a
+     PowerShell window you close afterwards:
 
      ```powershell
-     $env:DATA_DIR = "demo-data"
+     $env:DB_NAME = "erp_task_tracker_demo"
      npm run seed
      npm start
      ```
+
+     **Never run `npm run seed` against the database that holds real tasks.**
 
 3. Open <http://localhost:3000>. Keep the VS Code terminal visible: each request is
    logged there, which helps explain what the backend is doing.
@@ -109,9 +115,13 @@ addresses with `fetch` and draws the result.
    the server.
 3. Run `npm start` again and refresh. Everything is still there, including comments and
    Trash.
-4. Explain: data is in the SQLite file `data/erp-tracker.db` on the server, not in the
-   browser. Point out in the terminal that the old-task import did **not** run again.
-5. Optional: run `npm run backup` and show the file created in `backups/`.
+4. Explain: the data is in the MySQL database on the server, not in the browser and not in the
+   application. Point out in the terminal that start-up only checked the connection
+   ("MySQL connection OK") and imported nothing.
+5. Optional: look at the rows directly with the MySQL client (README, section 2, step 8), for
+   example `SELECT id, title, status FROM tasks;`, and change a task in the browser to show the
+   row change.
+6. Optional: run `npm run backup` and show the `.sql` file created in `backups/`.
 
 ## 10. Lead into the deployment lesson
 
@@ -125,9 +135,10 @@ addresses with `fetch` and draws the result.
 - State the main limitation yourself: **there is no login or permissions yet**, so this
   is not ready for real company data until that is added.
 
-Good questions to ask your team lead: Where should the database folder live on the
-server? Which account will run Node.js? How will the app start after a reboot? Who makes
-the DNS record? How will backups be scheduled?
+Good questions to ask your team lead: Which account will run Node.js, and who may read the
+`.env` file with the database password? How will the app (and the MySQL service) start after a
+reboot? Who makes the DNS record? Where will the `.sql` backups be copied to, and how will they
+be scheduled? Who applies future database changes, since the application's account cannot?
 
 ## Automated checks you can show
 
@@ -135,5 +146,8 @@ the DNS record? How will backups be scheduled?
 npm test
 ```
 
-runs 12 API tests (validation, filters, overdue rules, comments, Trash, conflicts,
-one-time import, module names) against a temporary database in a few seconds.
+runs the automated tests in a few seconds. Without extra setup it runs the checks that need no
+database (settings, validation, error messages, the schema file, the import logic) and skips the
+ones that need MySQL. With a MySQL administrator account in `TEST_DB_ADMIN_USER` /
+`TEST_DB_ADMIN_PASSWORD` (README, section 3, "Running the tests") it also runs the full API tests
+against a throw-away database, never your real one.

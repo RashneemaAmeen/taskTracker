@@ -1,30 +1,51 @@
-// Every database query for tasks and comments lives here.
-// All values are passed as "?" parameters, never glued into the SQL text.
+// Every database query for tasks and comments lives here. All functions are asynchronous.
+//
+// - Values are always passed as "?" parameters (server-side prepared statements via
+//   execute()), never glued into the SQL text.
+// - The first argument "db" is either the connection pool or one connection that is inside
+//   a transaction; both offer the same execute() method.
+// - Changes use single atomic statements with a condition (for example
+//   "WHERE id = ? AND version = ?") and then check how many rows were affected, so two
+//   people saving at the same moment can never overwrite each other silently.
+// - Timestamps are written with UTC_TIMESTAMP(3), the database's own clock, so every
+//   created/updated/deleted time comes from one place.
 
-const { transaction } = require('./database');
+const { withTransaction, toIsoUtc, toDateOnly } = require('./database');
 const { TEAM, MODULES, UNASSIGNED } = require('./constants');
 const { todayInDubai } = require('./dates');
 
+// All columns the browser needs. (The reference "ERP-007" is built in JavaScript from the id.)
 const SELECT_TASK = `
-  SELECT t.id, printf('ERP-%03d', t.id) AS reference, t.title, t.description, t.module, t.assignee,
-         t.priority, t.status, t.due_date, t.created_at, t.updated_at, t.version, t.deleted_at,
+  SELECT t.id, t.title, t.description, t.module, t.assignee, t.priority, t.status,
+         t.due_date, t.created_at, t.updated_at, t.version, t.deleted_at,
          (SELECT COUNT(*) FROM comments c WHERE c.task_id = t.id) AS comment_count
   FROM tasks t`;
 
-// Overdue = has a due date before today (Dubai) and is not completed. Takes one "?" (today).
-const OVERDUE_SQL = "(t.due_date IS NOT NULL AND t.due_date < ? AND t.status <> 'Completed')";
+// The same reference built in SQL, used only for searching. Like "ERP-%03d": three digits,
+// and longer numbers (ERP-1000) are not cut short.
+const REFERENCE_SQL = "CONCAT('ERP-', IF(t.id < 1000, LPAD(t.id, 3, '0'), CAST(t.id AS CHAR)))";
 
-// Field names accepted from the API, mapped to their database columns.
+// Overdue = has a due date before today (Dubai) and is not completed. Takes one "?" (today).
+const OVERDUE_SQL = "(t.due_date IS NOT NULL AND t.due_date < CAST(? AS DATE) AND t.status <> 'Completed')";
+
+// Field names accepted from the API, mapped to their database columns (a fixed whitelist).
 const EDITABLE_COLUMNS = {
   title: 'title', description: 'description', module: 'module', assignee: 'assignee',
   priority: 'priority', status: 'status', dueDate: 'due_date'
 };
 
+const referenceFor = id => `ERP-${String(id).padStart(3, '0')}`;
+
+// Counts come back as numbers (or numeric text for SUM); make them plain numbers.
+const count = value => Number(value ?? 0);
+
 // Converts a database row into the JSON shape sent to the browser.
 function toTask(row, today) {
+  const dueDate = toDateOnly(row.due_date);
+  const deletedAt = toIsoUtc(row.deleted_at);
   return {
     id: row.id,
-    reference: row.reference,
+    reference: referenceFor(row.id),
     title: row.title,
     description: row.description,
     module: row.module,
@@ -32,13 +53,13 @@ function toTask(row, today) {
     assignee: row.assignee,
     priority: row.priority,
     status: row.status,
-    dueDate: row.due_date,
-    isOverdue: !row.deleted_at && Boolean(row.due_date) && row.due_date < today && row.status !== 'Completed',
-    commentCount: row.comment_count,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    dueDate,
+    isOverdue: !deletedAt && Boolean(dueDate) && dueDate < today && row.status !== 'Completed',
+    commentCount: count(row.comment_count),
+    createdAt: toIsoUtc(row.created_at),
+    updatedAt: toIsoUtc(row.updated_at),
     version: row.version,
-    deletedAt: row.deleted_at
+    deletedAt
   };
 }
 
@@ -47,9 +68,9 @@ function buildWhere(filters, today) {
   const clauses = ['t.deleted_at IS NULL'];
   const params = [];
   if (filters.q) {
-    // Escape % and _ so they are searched for literally.
-    const like = `%${filters.q.replace(/[\\%_]/g, character => `\\${character}`)}%`;
-    clauses.push(`(printf('ERP-%03d', t.id) LIKE ? ESCAPE '\\' OR t.title LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')`);
+    // "!" is the LIKE escape character here, so % _ and ! typed by a person are searched literally.
+    const like = `%${filters.q.replace(/[!%_]/g, character => `!${character}`)}%`;
+    clauses.push(`(${REFERENCE_SQL} LIKE ? ESCAPE '!' OR t.title LIKE ? ESCAPE '!' OR t.description LIKE ? ESCAPE '!')`);
     params.push(like, like, like);
   }
   if (filters.assignee === UNASSIGNED) clauses.push('t.assignee IS NULL');
@@ -61,69 +82,73 @@ function buildWhere(filters, today) {
   return { where: clauses.join(' AND '), params };
 }
 
-// Module names used by existing tasks (including Trash) that are not in the current list.
-function listOlderModules(db) {
-  return db.prepare('SELECT DISTINCT module FROM tasks ORDER BY module').all()
-    .map(row => row.module)
-    .filter(name => !MODULES.includes(name));
+async function rows(db, sql, params = []) {
+  const [result] = await db.execute(sql, params);
+  return result;
 }
 
-function listTasks(db, filters = {}) {
+// Module names used by existing tasks (including Trash) that are not in the current list.
+async function listOlderModules(db) {
+  const found = await rows(db, 'SELECT DISTINCT module FROM tasks ORDER BY module');
+  return found.map(row => row.module).filter(name => !MODULES.includes(name));
+}
+
+async function listTasks(db, filters = {}) {
   const today = todayInDubai();
   const { where, params } = buildWhere(filters, today);
-  const rows = db.prepare(`
+  const found = await rows(db, `
     ${SELECT_TASK}
     WHERE ${where}
     ORDER BY (t.status = 'Completed'), (t.due_date IS NULL), t.due_date,
              CASE t.priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END, t.id
-  `).all(...params);
-  return rows.map(row => toTask(row, today));
+  `, params);
+  return found.map(row => toTask(row, today));
 }
 
-function getDashboard(db, filters = {}) {
+async function getDashboard(db, filters = {}) {
   const today = todayInDubai();
   const { where, params } = buildWhere(filters, today);
-  const totals = db.prepare(`
+  const [totals] = await rows(db, `
     SELECT COUNT(*) AS active,
            COALESCE(SUM(t.status = 'In Progress'), 0) AS in_progress,
            COALESCE(SUM(t.status = 'Completed'), 0) AS completed,
            COALESCE(SUM(${OVERDUE_SQL}), 0) AS overdue
     FROM tasks t WHERE ${where}
-  `).get(today, ...params);
+  `, [today, ...params]);
 
   // Workload always covers every task outside Trash, whatever filters are applied.
-  const rows = db.prepare(`
+  const workloadRows = await rows(db, `
     SELECT assignee,
-           SUM(status <> 'Completed') AS pending,
-           SUM(status = 'Completed') AS completed
+           COALESCE(SUM(status <> 'Completed'), 0) AS pending,
+           COALESCE(SUM(status = 'Completed'), 0) AS completed
     FROM tasks WHERE deleted_at IS NULL GROUP BY assignee
-  `).all();
+  `);
   const countsFor = name => {
-    const row = rows.find(item => item.assignee === name);
-    return { pending: row ? row.pending : 0, completed: row ? row.completed : 0 };
+    const row = workloadRows.find(item => item.assignee === name);
+    return { pending: row ? count(row.pending) : 0, completed: row ? count(row.completed) : 0 };
   };
 
   // Module summary: like workload, it always covers every task outside Trash.
-  const moduleRows = db.prepare(`
+  const moduleRows = await rows(db, `
     SELECT module,
-           SUM(status <> 'Completed') AS pending,
-           SUM(status = 'Completed') AS completed
+           COALESCE(SUM(status <> 'Completed'), 0) AS pending,
+           COALESCE(SUM(status = 'Completed'), 0) AS completed
     FROM tasks WHERE deleted_at IS NULL GROUP BY module
-  `).all();
+  `);
   const olderInUse = moduleRows.map(row => row.module).filter(name => !MODULES.includes(name)).sort();
   const moduleSummary = [...MODULES, ...olderInUse].map(name => {
     const row = moduleRows.find(item => item.module === name);
-    return { name, pending: row ? row.pending : 0, completed: row ? row.completed : 0, olderName: !MODULES.includes(name) };
+    return { name, pending: row ? count(row.pending) : 0, completed: row ? count(row.completed) : 0, olderName: !MODULES.includes(name) };
   });
 
   return {
     scope: Object.keys(filters).length ? 'filtered' : 'all',
     today,
     summary: {
-      active: totals.active,
-      inProgress: totals.in_progress,
-      completed: totals.completed,
-      overdue: totals.overdue
+      active: count(totals.active),
+      inProgress: count(totals.in_progress),
+      completed: count(totals.completed),
+      overdue: count(totals.overdue)
     },
     workloadScope: 'all',
     workload: TEAM.map(name => ({ name, ...countsFor(name) })),
@@ -134,90 +159,108 @@ function getDashboard(db, filters = {}) {
 }
 
 // Returns one task (trashed or not), or null when it does not exist.
-function getTask(db, id) {
-  const row = db.prepare(`${SELECT_TASK} WHERE t.id = ?`).get(id);
+async function getTask(db, id) {
+  const [row] = await rows(db, `${SELECT_TASK} WHERE t.id = ?`, [id]);
   return row ? toTask(row, todayInDubai()) : null;
 }
 
-function createTask(db, task) {
-  const now = new Date().toISOString();
-  const result = db.prepare(`
+async function createTask(db, task) {
+  const [result] = await db.execute(`
     INSERT INTO tasks (title, description, module, assignee, priority, status, due_date, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(task.title, task.description, task.module, task.assignee, task.priority, task.status, task.dueDate, now, now);
-  return getTask(db, Number(result.lastInsertRowid));
+    VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+  `, [task.title, task.description, task.module, task.assignee ?? null, task.priority, task.status, task.dueDate ?? null]);
+  return getTask(db, result.insertId);
 }
 
 // Saves changes only if nobody else changed the task since `version` was loaded.
 // Returns { outcome: 'updated' | 'not-found' | 'in-trash' | 'conflict', task }.
-function updateTask(db, id, changes, version) {
-  return transaction(db, () => {
-    const current = getTask(db, id);
-    if (!current) return { outcome: 'not-found' };
-    if (current.deletedAt) return { outcome: 'in-trash', task: current };
-    if (current.version !== version) return { outcome: 'conflict', task: current };
+//
+// The UPDATE itself checks the version and "not in Trash" in one atomic statement. If it
+// matched no row, we look the task up again to say why. Update and lookup share one
+// transaction so the task returned is exactly the state our change produced.
+async function updateTask(pool, id, changes, version) {
+  const keys = Object.keys(changes).filter(key => EDITABLE_COLUMNS[key]);
+  const assignments = keys.map(key => `${EDITABLE_COLUMNS[key]} = ?`);
+  const values = keys.map(key => changes[key] ?? null);
+  const sql = `UPDATE tasks SET ${[...assignments, 'updated_at = UTC_TIMESTAMP(3)', 'version = version + 1'].join(', ')}
+               WHERE id = ? AND version = ? AND deleted_at IS NULL`;
 
-    const keys = Object.keys(changes).filter(key => EDITABLE_COLUMNS[key]);
-    const assignments = keys.map(key => `${EDITABLE_COLUMNS[key]} = ?`);
-    const values = keys.map(key => changes[key]);
-    db.prepare(`UPDATE tasks SET ${[...assignments, 'updated_at = ?', 'version = version + 1'].join(', ')} WHERE id = ? AND version = ?`)
-      .run(...values, new Date().toISOString(), id, version);
-    return { outcome: 'updated', task: getTask(db, id) };
+  return withTransaction(pool, async connection => {
+    const [result] = await connection.execute(sql, [...values, id, version]);
+    const task = await getTask(connection, id);
+    if (result.affectedRows === 1) return { outcome: 'updated', task };
+    if (!task) return { outcome: 'not-found' };
+    if (task.deletedAt) return { outcome: 'in-trash', task };
+    return { outcome: 'conflict', task };
   });
 }
 
 // Soft delete: the task stays in the database with a deletion timestamp.
-function moveToTrash(db, id) {
-  return transaction(db, () => {
-    const current = getTask(db, id);
-    if (!current) return { outcome: 'not-found' };
-    if (current.deletedAt) return { outcome: 'in-trash', task: current };
-    const now = new Date().toISOString();
-    db.prepare('UPDATE tasks SET deleted_at = ?, updated_at = ?, version = version + 1 WHERE id = ?').run(now, now, id);
-    return { outcome: 'trashed', task: getTask(db, id) };
+async function moveToTrash(pool, id) {
+  return withTransaction(pool, async connection => {
+    const [result] = await connection.execute(
+      'UPDATE tasks SET deleted_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3), version = version + 1 WHERE id = ? AND deleted_at IS NULL',
+      [id]);
+    const task = await getTask(connection, id);
+    if (result.affectedRows === 1) return { outcome: 'trashed', task };
+    if (!task) return { outcome: 'not-found' };
+    return { outcome: 'in-trash', task };
   });
 }
 
-function listTrash(db) {
+async function listTrash(db) {
   const today = todayInDubai();
-  return db.prepare(`${SELECT_TASK} WHERE t.deleted_at IS NOT NULL ORDER BY t.deleted_at DESC, t.id DESC`)
-    .all()
-    .map(row => toTask(row, today));
+  const found = await rows(db, `${SELECT_TASK} WHERE t.deleted_at IS NOT NULL ORDER BY t.deleted_at DESC, t.id DESC`);
+  return found.map(row => toTask(row, today));
 }
 
-function restoreTask(db, id) {
-  return transaction(db, () => {
-    const current = getTask(db, id);
-    if (!current) return { outcome: 'not-found' };
-    if (!current.deletedAt) return { outcome: 'not-in-trash', task: current };
-    db.prepare('UPDATE tasks SET deleted_at = NULL, updated_at = ?, version = version + 1 WHERE id = ?')
-      .run(new Date().toISOString(), id);
-    return { outcome: 'restored', task: getTask(db, id) };
+async function restoreTask(pool, id) {
+  return withTransaction(pool, async connection => {
+    const [result] = await connection.execute(
+      'UPDATE tasks SET deleted_at = NULL, updated_at = UTC_TIMESTAMP(3), version = version + 1 WHERE id = ? AND deleted_at IS NOT NULL',
+      [id]);
+    const task = await getTask(connection, id);
+    if (result.affectedRows === 1) return { outcome: 'restored', task };
+    if (!task) return { outcome: 'not-found' };
+    return { outcome: 'not-in-trash', task };
   });
 }
 
-// Permanent deletion is only possible for tasks already in Trash. Comments are removed too.
-function deletePermanently(db, id) {
-  return transaction(db, () => {
-    const current = getTask(db, id);
-    if (!current) return { outcome: 'not-found' };
-    if (!current.deletedAt) return { outcome: 'not-in-trash', task: current };
-    db.prepare('DELETE FROM tasks WHERE id = ? AND deleted_at IS NOT NULL').run(id);
-    return { outcome: 'deleted' };
-  });
+// Permanent deletion is only possible for tasks already in Trash. The database removes the
+// task's comments with it (ON DELETE CASCADE), in the same statement.
+async function deletePermanently(pool, id) {
+  const [result] = await pool.execute('DELETE FROM tasks WHERE id = ? AND deleted_at IS NOT NULL', [id]);
+  if (result.affectedRows === 1) return { outcome: 'deleted' };
+  const task = await getTask(pool, id);
+  if (!task) return { outcome: 'not-found' };
+  return { outcome: 'not-in-trash', task };
 }
 
-function listComments(db, taskId) {
-  return db.prepare('SELECT id, task_id, author, body, created_at FROM comments WHERE task_id = ? ORDER BY created_at, id')
-    .all(taskId)
-    .map(row => ({ id: row.id, taskId: row.task_id, author: row.author, body: row.body, createdAt: row.created_at }));
+async function listComments(db, taskId) {
+  const found = await rows(db,
+    'SELECT id, task_id, author, body, created_at FROM comments WHERE task_id = ? ORDER BY created_at, id', [taskId]);
+  return found.map(toComment);
 }
 
-function addComment(db, taskId, comment) {
-  const now = new Date().toISOString();
-  const result = db.prepare('INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)')
-    .run(taskId, comment.author, comment.body, now);
-  return { id: Number(result.lastInsertRowid), taskId, author: comment.author, body: comment.body, createdAt: now };
+const toComment = row => ({
+  id: row.id, taskId: row.task_id, author: row.author, body: row.body, createdAt: toIsoUtc(row.created_at)
+});
+
+// Adds a comment unless the task is missing or in Trash. The check and the insert are one
+// statement, so a task trashed a moment earlier cannot receive a comment.
+// Returns { outcome: 'added' | 'not-found' | 'in-trash', comment | task }.
+async function addComment(db, taskId, comment) {
+  const [result] = await db.execute(`
+    INSERT INTO comments (task_id, author, body, created_at)
+    SELECT t.id, ?, ?, UTC_TIMESTAMP(3) FROM tasks t WHERE t.id = ? AND t.deleted_at IS NULL
+  `, [comment.author, comment.body, taskId]);
+  if (result.affectedRows === 1) {
+    const [row] = await rows(db, 'SELECT id, task_id, author, body, created_at FROM comments WHERE id = ?', [result.insertId]);
+    return { outcome: 'added', comment: toComment(row) };
+  }
+  const task = await getTask(db, taskId);
+  if (!task) return { outcome: 'not-found' };
+  return { outcome: 'in-trash', task };
 }
 
 module.exports = {

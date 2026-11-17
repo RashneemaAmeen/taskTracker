@@ -2,21 +2,13 @@
 // The people on the sample tasks are mixed on purpose: nobody "owns" a module.
 // It never runs automatically, and it refuses to run twice on the same database.
 
-const { loadConfig } = require('../src/config');
-const { openDatabase, transaction, getMeta, setMeta } = require('../src/database');
+const { runCli } = require('../src/cli');
+const { withTransaction, claimMeta } = require('../src/database');
 const { createTask, addComment } = require('../src/taskStore');
 const { todayInDubai, addDays } = require('../src/dates');
 
-const config = loadConfig();
-const db = openDatabase(config.dbFile);
 const today = todayInDubai();
 const inDays = days => addDays(today, days);
-
-if (getMeta(db, 'sample_seeded')) {
-  console.log('Sample tasks were already added to this database. Nothing was changed.');
-  db.close();
-  process.exit(0);
-}
 
 const note = 'Sample task for demonstration only. Safe to move to Trash.';
 const samples = [
@@ -43,17 +35,25 @@ const samples = [
   { title: 'Agree naming convention for database tables', module: 'General / Cross-module', assignee: null, priority: 'Low', status: 'To Do', dueDate: null }
 ];
 
-transaction(db, () => {
-  for (const sample of samples) {
-    const task = createTask(db, {
-      title: `[Sample] ${sample.title}`, description: note, module: sample.module, assignee: sample.assignee,
-      priority: sample.priority, status: sample.status, dueDate: sample.dueDate
-    });
-    for (const [author, body] of sample.comments || []) addComment(db, task.id, { author, body });
-  }
-  setMeta(db, 'sample_seeded', new Date().toISOString());
-});
+runCli(async ({ config, pool }) => {
+  const added = await withTransaction(pool, async connection => {
+    // Claim the marker first: a second seed running at the same moment waits, then stops here.
+    if (!(await claimMeta(connection, 'sample_seeded', new Date().toISOString()))) return 0;
+    for (const sample of samples) {
+      const task = await createTask(connection, {
+        title: `[Sample] ${sample.title}`, description: note, module: sample.module, assignee: sample.assignee,
+        priority: sample.priority, status: sample.status, dueDate: sample.dueDate
+      });
+      for (const [author, body] of sample.comments || []) await addComment(connection, task.id, { author, body });
+    }
+    return samples.length;
+  });
 
-console.log(`Added ${samples.length} sample tasks (titles start with "[Sample]") to ${config.dbFile}.`);
-console.log('Refresh the browser to see them.');
-db.close();
+  if (!added) {
+    console.log('Sample tasks were already added to this database. Nothing was changed.');
+    return 0;
+  }
+  console.log(`Added ${added} sample tasks (titles start with "[Sample]") to database "${config.db.database}".`);
+  console.log('Refresh the browser to see them.');
+  return 0;
+});

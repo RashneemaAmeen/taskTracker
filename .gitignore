@@ -1,19 +1,22 @@
 # Installed packages (recreated by "npm install")
 node_modules/
 
-# Secrets and machine-specific settings (.env.example IS committed)
+# Secrets and machine-specific settings. Only the placeholder file .env.example is committed.
 .env
+.env.*
+!.env.example
 
-# Runtime data: the SQLite database, its helper files, backups and the old task file
+# Runtime data: backups, old SQLite files and the old tasks.json (company data, kept out of Git)
+backups/
+*.sqlite
 data/*.db
 data/*.db-wal
 data/*.db-shm
 data/*.tmp
 data/tasks.json
-backups/
 
 # Logs
 *.log
 
-# Separate demo database (see DEMO_GUIDE.md)
+# Separate demo data folder (see DEMO_GUIDE.md)
 demo-data/
