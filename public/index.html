@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERP Rebuild Task Tracker</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <div class="app">
+    <!-- ===== Left sidebar: navigation and quick filters ===== -->
+    <aside id="sidebar" class="sidebar" aria-label="Navigation and filters">
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-text"><strong>ERP Rebuild</strong><span>Task Tracker</span></span>
+        <button type="button" id="sidebar-close" class="icon-btn sidebar-close" aria-label="Close menu">×</button>
+      </div>
+
+      <nav class="side-nav" aria-label="Main">
+        <button type="button" class="nav-link" data-page="overview">Overview</button>
+        <button type="button" class="nav-link" data-page="tasks">Tasks</button>
+        <button type="button" class="nav-link" data-page="trash">Trash <span id="trash-count" class="side-count" hidden></span></button>
+      </nav>
+
+      <section class="side-section" aria-labelledby="side-team-heading">
+        <h2 id="side-team-heading" class="side-heading">Team</h2>
+        <ul id="team-filters" class="side-list"></ul>
+      </section>
+
+      <details id="module-nav" class="side-section side-details" open>
+        <summary class="side-heading">Modules</summary>
+        <div id="module-filters"></div>
+      </details>
+
+      <p class="side-foot">No login yet: names are chosen from a list and are not verified.
+        <a href="/health" target="_blank" rel="noopener">Server health</a></p>
+    </aside>
+    <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+
+    <!-- ===== Main workspace ===== -->
+    <div class="workspace">
+      <header class="workspace-head">
+        <button type="button" id="menu-button" class="btn menu-button" aria-expanded="false" aria-controls="sidebar">
+          <span class="menu-icon" aria-hidden="true"></span> Menu
+        </button>
+        <div class="workspace-title">
+          <h1>ERP Rebuild</h1>
+          <p>Task workspace for the ERP rebuild team</p>
+        </div>
+        <div class="workspace-actions">
+          <span id="last-updated" class="last-updated"></span>
+          <button type="button" id="refresh" class="btn">Refresh</button>
+          <button type="button" id="add-task" class="btn primary">+ New task</button>
+        </div>
+      </header>
+
+      <main id="main" tabindex="-1">
+        <div id="load-error" class="banner banner-error" role="alert" hidden>
+          <span id="load-error-text"></span>
+          <button type="button" id="retry" class="btn small">Try again</button>
+        </div>
+
+        <!-- ===== Overview page ===== -->
+        <div id="page-overview" class="page" hidden>
+          <div class="page-head">
+            <h2>Overview</h2>
+            <span class="scope-label">Counts cover all tasks</span>
+          </div>
+          <div id="overview-summary" class="summary-strip" role="group" aria-label="Task totals, all tasks"></div>
+          <div id="overview-loading" class="state" role="status">Loading overview…</div>
+
+          <section class="block" aria-labelledby="workload-heading">
+            <div class="block-head">
+              <h3 id="workload-heading">Team workload</h3>
+              <span class="scope-label">All tasks</span>
+            </div>
+            <ul id="workload" class="workload"></ul>
+          </section>
+
+          <details id="module-summary" class="block block-details" open>
+            <summary>
+              <h3 id="module-heading">Work by module</h3>
+              <span class="scope-label">All tasks</span>
+            </summary>
+            <div id="module-rows"></div>
+            <p id="module-older-note" class="hint" hidden>Entries marked “old name” were saved before the module list changed. Edit each task to choose a current module, or see “Older module names” in the README to map them together.</p>
+          </details>
+        </div>
+
+        <!-- ===== Tasks page ===== -->
+        <div id="page-tasks" class="page">
+          <div class="page-head">
+            <h2 id="tasks-heading">Tasks</h2>
+            <span id="result-count" class="result-count" role="status" aria-live="polite"></span>
+            <span id="dashboard-scope" class="scope-label">Counts cover all tasks</span>
+          </div>
+          <div id="task-summary" class="summary-strip" role="group" aria-label="Task totals"></div>
+
+          <div class="toolbar">
+            <form id="filters" class="filters" role="search" aria-label="Search and filter tasks">
+              <label class="sr-only" for="filter-q">Search tasks</label>
+              <input id="filter-q" name="q" type="search" maxlength="100" placeholder="Search reference, title or description" autocomplete="off">
+              <label class="sr-only" for="filter-assignee">Assigned to</label>
+              <select id="filter-assignee" name="assignee" class="pill-select"></select>
+              <label class="sr-only" for="filter-module">ERP module</label>
+              <select id="filter-module" name="module" class="pill-select"></select>
+              <label class="sr-only" for="filter-priority">Priority</label>
+              <select id="filter-priority" name="priority" class="pill-select"></select>
+              <label class="sr-only" for="filter-status">Status</label>
+              <select id="filter-status" name="status" class="pill-select"></select>
+              <label class="pill-check"><input id="filter-overdue" name="overdue" type="checkbox"> Overdue only</label>
+              <button type="button" id="clear-filters" class="btn-link" disabled>Clear filters</button>
+            </form>
+            <div class="view-toggle" role="group" aria-label="Choose view">
+              <button type="button" class="toggle" data-view="table" aria-pressed="true">Table</button>
+              <button type="button" class="toggle" data-view="board" aria-pressed="false">Board</button>
+            </div>
+          </div>
+
+          <div id="task-loading" class="state" role="status">Loading tasks…</div>
+          <div id="task-empty" class="state" hidden></div>
+          <div id="task-table" class="surface" hidden></div>
+          <div id="task-board" class="board" hidden></div>
+        </div>
+
+        <!-- ===== Trash page ===== -->
+        <div id="page-trash" class="page" hidden>
+          <div class="page-head">
+            <h2 id="trash-heading">Trash</h2>
+          </div>
+          <p class="help">Tasks moved to Trash are hidden from the overview, search and board. <strong>Restore</strong> brings a task back with its details and comments. <strong>Delete permanently</strong> removes it for good.</p>
+          <div id="trash-loading" class="state" role="status">Loading Trash…</div>
+          <div id="trash-empty" class="state" hidden></div>
+          <div id="trash-table" class="surface" hidden></div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ===== Add / edit task ===== -->
+  <dialog id="form-dialog" class="dialog" aria-labelledby="form-title">
+    <form id="task-form" novalidate>
+      <div class="dialog-head">
+        <h2 id="form-title">New task</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+      </div>
+      <div class="dialog-body">
+        <div id="form-error" class="banner banner-error" role="alert" hidden></div>
+        <div id="form-conflict" class="banner banner-warning" role="alert" hidden></div>
+
+        <div class="field">
+          <label for="task-title">Title <span class="required">(required)</span></label>
+          <input id="task-title" name="title" type="text" maxlength="150" required autocomplete="off" aria-describedby="error-title">
+          <p id="error-title" class="field-error" hidden></p>
+        </div>
+        <div class="field">
+          <label for="task-description">Description</label>
+          <textarea id="task-description" name="description" rows="4" maxlength="4000" aria-describedby="error-description"></textarea>
+          <p id="error-description" class="field-error" hidden></p>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="task-module">ERP module</label>
+            <select id="task-module" name="module" aria-describedby="error-module"></select>
+            <p id="error-module" class="field-error" hidden></p>
+          </div>
+          <div class="field">
+            <label for="task-assignee">Assigned to</label>
+            <select id="task-assignee" name="assignee" aria-describedby="error-assignee"></select>
+            <p id="error-assignee" class="field-error" hidden></p>
+          </div>
+          <div class="field">
+            <label for="task-priority">Priority</label>
+            <select id="task-priority" name="priority" aria-describedby="error-priority"></select>
+            <p id="error-priority" class="field-error" hidden></p>
+          </div>
+          <div class="field">
+            <label for="task-status">Status</label>
+            <select id="task-status" name="status" aria-describedby="error-status"></select>
+            <p id="error-status" class="field-error" hidden></p>
+          </div>
+          <div class="field">
+            <label for="task-due">Due date <span class="optional">(optional)</span></label>
+            <input id="task-due" name="dueDate" type="date" min="2000-01-01" max="2100-12-31" aria-describedby="error-dueDate">
+            <p id="error-dueDate" class="field-error" hidden></p>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" id="form-save" class="btn primary">Add task</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== Task details and comments ===== -->
+  <dialog id="detail-dialog" class="dialog dialog-wide" aria-labelledby="detail-title">
+    <div class="dialog-head">
+      <div class="detail-heading">
+        <span id="detail-reference" class="reference"></span>
+        <h2 id="detail-title"></h2>
+      </div>
+      <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+    </div>
+    <div id="detail-body" class="dialog-body"></div>
+  </dialog>
+
+  <!-- ===== Confirmation ===== -->
+  <dialog id="confirm-dialog" class="dialog dialog-narrow" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <form method="dialog">
+      <div class="dialog-head"><h2 id="confirm-title"></h2></div>
+      <div class="dialog-body"><p id="confirm-message"></p></div>
+      <div class="dialog-foot">
+        <button type="submit" value="cancel" id="confirm-cancel" class="btn">Cancel</button>
+        <button type="submit" value="confirm" id="confirm-ok" class="btn primary"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>

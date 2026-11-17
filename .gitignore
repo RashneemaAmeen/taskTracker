@@ -1,0 +1,19 @@
+# Installed packages (recreated by "npm install")
+node_modules/
+
+# Secrets and machine-specific settings (.env.example IS committed)
+.env
+
+# Runtime data: the SQLite database, its helper files, backups and the old task file
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.tmp
+data/tasks.json
+backups/
+
+# Logs
+*.log
+
+# Separate demo database (see DEMO_GUIDE.md)
+demo-data/
